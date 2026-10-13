@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta name="wordlab-public" content="true">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f4eb">
+  <title>کارگاه واژه‌ها | بازی آموزشی فارسی</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+  <script src="shared.js" defer></script>
+  <script src="content.js" defer></script>
+  <script src="game.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#" id="brand" aria-label="کارگاه واژه‌ها، راهنمای بازی"><img class="brand-mark" src="assets/logo.svg" alt="" width="48" height="48"><span>کارگاه واژه‌ها<small>کشف کن، یاد بگیر، بازی کن</small></span></a>
+      <div class="header-actions"><button id="sound" class="icon-button" aria-pressed="true">صدا: روشن</button><button id="help" class="icon-button">راهنما <span aria-hidden="true">؟</span></button></div>
+    </header>
+    <nav class="steps" aria-label="مراحل بازی"><span data-step="WELCOME">شروع</span><i></i><span data-step="LEARNING">کشف الگو</span><i></i><span data-step="SORTING">سبد واژه‌ها</span><i></i><span data-step="BONUS">چالش</span><i></i><span data-step="RESULT">جشن یادگیری</span></nav>
+    <main id="app" tabindex="-1"></main>
+    <footer>یک کارگاه کوچک برای کشف دنیای بزرگ کلمه‌ها <span aria-hidden="true">✦</span></footer>
+  </div>
+  <div id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <h2 id="help-title">چطور بازی کنیم؟</h2>
+    <p>اول نمونه‌ها را ببین. بعد هر کلمه را در سبد درست بگذار.</p>
+    <ol><li>کارت را با ماوس یا انگشت بکش و روی سبد رها کن.</li><li>یا یک کارت را انتخاب کن، بعد روی سبد بزن.</li><li>با کیبورد: با Tab حرکت کن و با Enter یا فاصله انتخاب کن. Escape انتخاب کارت را لغو می‌کند.</li></ol>
+    <p>اشتباه کردن اشکالی ندارد؛ دوباره امتحان کن! هر کلمه ۱ امتیاز و چالش آخر ۲ امتیاز دارد.</p>
+    <p class="muted">بازی آفلاین است. فقط نتیجهٔ بازی روی همین دستگاه ذخیره می‌شود؛ نام یا اطلاعات شخصی لازم نیست.</p>
+    <button id="close-help" class="primary">متوجه شدم</button>
+  </dialog>
+</body>
+</html>
