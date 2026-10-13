@@ -8,7 +8,8 @@
   const $ = (selector) => document.querySelector(selector);
   const app = $('#app');
   const KEY = 'word-workshop-session-v2';
-  const screens = ['WELCOME', 'LEARNING', 'SORTING', 'BONUS', 'RESULT'];
+  const screens = ['WELCOME', 'LEARNING', 'SORTING', 'BONUS', 'REASONS', 'RESULT'];
+  const timedScreens = ['LEARNING','SORTING','BONUS','REASONS'];
   const maxScore = C.words.length + C.bonus.points;
   const fa = n => Number(n).toLocaleString('fa-IR');
   // متن محتوای قابل ویرایش پیش از ورود به HTML ایمن می‌شود.
@@ -17,11 +18,12 @@
   let selected = null, timer = null, drag = null, ignoreClick = false, announcementTimer = null;
   let soundEnabled = W.read('word-workshop-sound') !== false, audio = null, currentTone = null;
   let timeStamp = performance.now(), active = false, lastSnapshot = timeStamp;
-  const blank = () => ({ version:Bank.version, screen:'WELCOME', contentPackId:null, id:null, order:[], solved:[], mistakes:0, bonusStatus:'pending', rating:null, startedAt:null, finishedAt:null, elapsedMs:0, learningRemainingMs:Bank.learningSeconds*1000 });
+  const blank = () => ({ version:Bank.version, screen:'WELCOME', contentPackId:null, id:null, order:[], solved:[], mistakes:0, bonusStatus:'pending', rating:null, startedAt:null, finishedAt:null, elapsedMs:0, learningRemainingMs:Bank.learningSeconds*1000, groupOrder:[], reasonIndex:0, reasonAnswers:[], reasonsCompleted:false, reasoningElapsedMs:0, scoredFinishedAt:null, legacyCompleted:false, migratedFrom:null });
+  const emptyAnswers = pack => pack.reasons.questions.map(q=>({id:q.id,status:'pending',attempts:0,firstCorrect:null,tried:[],selected:null}));
   const read = W.read, write = W.write;
   const ratings = ['easy','suitable','hard'];
-  function valid(s) {
-    if (!s || s.version !== C.version || !screens.includes(s.screen)) return false;
+  function validCore(s, legacy = false) {
+    if (!s || s.version !== (legacy ? 2 : Bank.version) || !screens.includes(s.screen) || (legacy && s.screen==='REASONS')) return false;
     if (s.screen === 'WELCOME') return s.startedAt === null && s.solved?.length === 0;
     const pack = Bank.packs.find(p => p.id === s.contentPackId);
     if (!pack) return false;
@@ -30,23 +32,56 @@
     if (!Array.isArray(s.solved) || new Set(s.solved).size !== s.solved.length || !s.solved.every(id => ids.includes(id))) return false;
     if (!Number.isSafeInteger(s.mistakes) || s.mistakes < 0 || !Number.isFinite(s.startedAt) || s.startedAt <= 0) return false;
     if (!['pending','wrong','correct','skipped'].includes(s.bonusStatus) || !(s.rating === null || ratings.includes(s.rating))) return false;
-    if (['BONUS','RESULT'].includes(s.screen) && s.solved.length !== ids.length) return false;
+    if (['BONUS','REASONS','RESULT'].includes(s.screen) && s.solved.length !== ids.length) return false;
     if (s.screen === 'SORTING' && s.solved.length === ids.length) return false;
     if (s.screen === 'BONUS' && s.bonusStatus === 'skipped') return false;
     if (['WELCOME','LEARNING','SORTING'].includes(s.screen) && s.bonusStatus !== 'pending') return false;
     if (!Number.isFinite(s.elapsedMs) || s.elapsedMs < 0 || s.elapsedMs > Number.MAX_SAFE_INTEGER) return false;
     if (!Number.isFinite(s.learningRemainingMs) || s.learningRemainingMs < 0 || s.learningRemainingMs > Bank.learningSeconds*1000) return false;
-    if (s.screen === 'RESULT' && (!['correct','skipped'].includes(s.bonusStatus) || !Number.isFinite(s.finishedAt) || s.finishedAt < s.startedAt)) return false;
+    if (['REASONS','RESULT'].includes(s.screen) && !['correct','skipped'].includes(s.bonusStatus)) return false;
+    if (s.screen === 'RESULT' && (!Number.isFinite(s.finishedAt) || s.finishedAt < s.startedAt)) return false;
     if (s.screen !== 'RESULT' && s.finishedAt !== null) return false;
     return true;
   }
-  const restored = read(KEY);
+  function valid(s) {
+    if (!validCore(s)) return false;
+    if(s.screen==='WELCOME')return true;
+    const pack=Bank.packs.find(p=>p.id===s.contentPackId),questions=pack.reasons.questions;
+    if(!Array.isArray(s.groupOrder)||s.groupOrder.length!==2||new Set(s.groupOrder).size!==2||!s.groupOrder.every(id=>pack.groups.some(g=>g.id===id)))return false;
+    if(!Number.isInteger(s.reasonIndex)||s.reasonIndex<0||s.reasonIndex>4||!Array.isArray(s.reasonAnswers)||s.reasonAnswers.length!==4||typeof s.reasonsCompleted!=='boolean'||typeof s.legacyCompleted!=='boolean')return false;
+    if(!Number.isFinite(s.reasoningElapsedMs)||s.reasoningElapsedMs<0||s.reasoningElapsedMs>Number.MAX_SAFE_INTEGER)return false;
+    for(let i=0;i<4;i++){
+      const a=s.reasonAnswers[i],q=questions[i],ids=q.options.map(o=>o.id);
+      if(!a||a.id!==q.id||!['pending','correct','revealed'].includes(a.status)||!Array.isArray(a.tried)||new Set(a.tried).size!==a.tried.length||!a.tried.every(id=>ids.includes(id))||a.attempts!==a.tried.length||a.attempts>3)return false;
+      if(a.attempts===0?(a.firstCorrect!==null||a.selected!==null):(typeof a.firstCorrect!=='boolean'||a.selected!==a.tried[a.tried.length-1]))return false;
+      if(a.firstCorrect!==null&&a.firstCorrect!==(a.tried[0]===q.correctOptionId))return false;
+      if(a.status==='correct'&&a.selected!==q.correctOptionId)return false;
+      if(a.status==='revealed'&&(a.attempts!==3||a.tried.includes(q.correctOptionId)))return false;
+      if(a.status==='pending'&&(a.attempts>=3||a.tried.includes(q.correctOptionId)))return false;
+      if(i<s.reasonIndex&&a.status==='pending')return false;
+      if(i>s.reasonIndex&&(a.status!=='pending'||a.attempts!==0))return false;
+    }
+    if(s.reasonsCompleted!==(s.reasonIndex===4))return false;
+    if(['REASONS','RESULT'].includes(s.screen)){
+      if(!Number.isFinite(s.scoredFinishedAt)||s.scoredFinishedAt<s.startedAt)return false;
+    }else if(s.scoredFinishedAt!==null||s.reasonIndex!==0||s.reasoningElapsedMs!==0||s.reasonAnswers.some(a=>a.attempts))return false;
+    if(s.screen==='RESULT'&&(!s.reasonsCompleted&&!s.legacyCompleted||s.finishedAt<s.scoredFinishedAt))return false;
+    if(s.legacyCompleted&&!(s.screen==='RESULT'&&s.migratedFrom===2&&s.reasonIndex===0&&s.reasoningElapsedMs===0))return false;
+    return true;
+  }
+  function migrate(s){
+    if(!s||s.version!==2||!validCore(s,true))return s;
+    if(s.screen==='WELCOME')return blank();
+    const pack=Bank.packs.find(p=>p.id===s.contentPackId);
+    return {...blank(),...s,version:Bank.version,groupOrder:pack.groups.map(g=>g.id),reasonAnswers:emptyAnswers(pack),legacyCompleted:s.screen==='RESULT',scoredFinishedAt:s.screen==='RESULT'?s.finishedAt:null,migratedFrom:2};
+  }
+  const restored = migrate(read(KEY));
   let state = valid(restored) && restored.screen !== 'WELCOME' ? restored : blank();
   if (state.contentPackId) C = Bank.packs.find(p => p.id === state.contentPackId);
   function syncTime() {
     const now = performance.now(), delta = Math.max(0, now-timeStamp); timeStamp = now;
-    if (active && ['LEARNING','SORTING','BONUS'].includes(state.screen)) {
-      state.elapsedMs += delta;
+    if (active && timedScreens.includes(state.screen)) {
+      if(state.screen==='REASONS')state.reasoningElapsedMs+=delta;else state.elapsedMs += delta;
       if (state.screen === 'LEARNING') state.learningRemainingMs = Math.max(0,state.learningRemainingMs-delta);
     }
   }
@@ -54,8 +89,8 @@
   function setActive(value) { syncTime(); active = value; timeStamp = performance.now(); }
   function startTicker() {
     clearInterval(timer); timer = null;
-    setActive(['LEARNING','SORTING','BONUS'].includes(state.screen) && !document.hidden && !$('#help-dialog').open);
-    if (!['LEARNING','SORTING','BONUS'].includes(state.screen)) return;
+    setActive(timedScreens.includes(state.screen) && !document.hidden && !$('#help-dialog').open);
+    if (!timedScreens.includes(state.screen)) return;
     timer = setInterval(() => {
       syncTime();
       if (state.screen === 'LEARNING') {
@@ -81,6 +116,10 @@
     for (let i = result.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [result[i], result[j]] = [result[j], result[i]]; }
     return result;
   }
+  function identity(id){const index=state.groupOrder.indexOf(id);return {letter:index===0?'الف':'ب',symbol:index===0?'●':'◆',style:index===0?'maker':'fruit'};}
+  const displayGroups=()=>state.groupOrder.map(id=>C.groups.find(g=>g.id===id));
+  const groupText=(text,id)=>text.replaceAll('{group}',identity(id).letter);
+  const migrationNote=()=>state.migratedFrom===2&&!state.legacyCompleted?'<p class="note">دور قبلی با پیشرفت و امتیازش ادامه پیدا کرده است. نام گروه‌ها در نسخهٔ قبلی دیده شده بود؛ در ادامه راز آن‌ها را مرور می‌کنیم.</p>':'';
   function announce(message) { clearTimeout(announcementTimer); $('#announcement').textContent = ''; announcementTimer = setTimeout(() => { $('#announcement').textContent = message; }, 30); }
   function feedback(message, error = false) {
     const el = $('#feedback');
@@ -124,6 +163,7 @@
     C = choosePack(); state = blank(); state.contentPackId=C.id;
     state.id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
     state.order=shuffle(C.words.map(w=>w.id));state.startedAt=Date.now();timeStamp=performance.now();
+    state.groupOrder=shuffle(C.groups.map(g=>g.id));state.reasonAnswers=emptyAnswers(C);
     enterLearning(); tone(true);
   }
   function enterLearning() { state.learningRemainingMs = Bank.learningSeconds*1000; transition('LEARNING'); }
@@ -141,6 +181,7 @@
     else if (state.screen === 'LEARNING') renderLearning();
     else if (state.screen === 'SORTING') renderSorting();
     else if (state.screen === 'BONUS') renderBonus();
+    else if (state.screen === 'REASONS') renderReasons();
     else renderResult();
   }
   function renderWelcome() {
@@ -148,14 +189,14 @@
     $('#start').onclick = newGame; $('#welcome-help').onclick = openHelp;
   }
   function renderLearning() {
-    app.innerHTML = `<section aria-labelledby="learning-title"><div class="screen-heading"><div><div class="eyebrow">قدم اول · الگوها را کشف کن</div><h2 id="learning-title">خوب نگاه کن، چه شباهتی دارند؟</h2><p>دو راه متفاوت برای دسته‌بندی کلمه‌ها داریم.</p></div><div class="timer"><strong id="timer-value">${fa(Math.ceil(state.learningRemainingMs/1000))}</strong><small>ثانیه برای دیدن نمونه‌ها</small></div></div><div class="groups">${C.groups.map(g => `<article class="learning-group ${esc(g.id)}"><span class="group-kind">${esc(g.kind)}</span><h3>${esc(g.title)}</h3><div class="examples">${g.examples.map(w => `<span class="example">${g.suffix && w.endsWith(g.suffix) ? esc(w.slice(0,-g.suffix.length))+'<em>'+esc(g.suffix)+'</em>' : esc(w)}</span>`).join('')}</div><p>${esc(g.explanation)}</p></article>`).join('')}</div><p class="note">✦ یک گروه از روی ساخت کلمه است؛ گروه دیگر از روی معنی. فقط شبیه بودن حروف کافی نیست!</p><div class="learning-actions"><button class="primary" id="skip-learning">متوجه شدم، بریم بازی! <span aria-hidden="true">←</span></button><p>این زمان فقط برای دیدن نمونه‌هاست؛ هیچ امتیازی کم نمی‌شود.${state.solved.length ? ' پیشرفت قبلی تو محفوظ است.' : ''}</p></div></section>`;
+    app.innerHTML = `<section aria-labelledby="learning-title"><div class="screen-heading"><div><div class="eyebrow">قدم اول · راز گروه‌ها را پیدا کن</div><h2 id="learning-title">خوب نگاه کن، چه شباهتی دارند؟</h2><p>به کلمه‌های هر گروه خوب نگاه کن. چه رازی باعث شده کنار هم قرار بگیرند؟</p></div><div class="timer"><strong id="timer-value">${fa(Math.ceil(state.learningRemainingMs/1000))}</strong><small>ثانیه برای دیدن نمونه‌ها</small></div></div>${migrationNote()}<div class="groups">${displayGroups().map(g => {const v=identity(g.id);return `<article class="learning-group ${v.style}" data-mystery-group="${esc(g.id)}"><span class="group-kind"><span aria-hidden="true">${v.symbol}</span> نمونه‌های گروه ${v.letter}</span><h3>گروه ${v.letter}</h3><div class="examples">${g.examples.map(w => `<span class="example">${esc(w)}</span>`).join('')}</div><p>فکر کن این کلمه‌ها چه شباهتی دارند.</p></article>`;}).join('')}</div><p class="note">✦ رنگ و نشان هر گروه را به خاطر بسپار؛ سبد همان گروه هم همین نشان را دارد.</p><div class="learning-actions"><button class="primary" id="skip-learning">متوجه شدم، بریم بازی! <span aria-hidden="true">←</span></button><p>این زمان فقط برای دیدن نمونه‌هاست؛ هیچ امتیازی کم نمی‌شود.${state.solved.length ? ' پیشرفت قبلی تو محفوظ است.' : ''}</p></div></section>`;
     $('#skip-learning').onclick = startSorting;
   }
   function renderSorting() {
-    app.innerHTML = `<section aria-labelledby="sorting-title"><div class="screen-heading sorting-heading"><div><div class="eyebrow">قدم دوم · هر کلمه در سبد خودش</div><h2 id="sorting-title">وقتِ چیدن واژه‌هاست!</h2><p>کارت را بکش، یا کارت و بعد سبد را انتخاب کن.</p></div><div class="scoreboard"><div class="stat">کلمه‌های درست<strong id="correct-count">${fa(state.solved.length)} از ${fa(C.words.length)}</strong></div><div class="stat">امتیاز تو<strong id="score">${fa(score())}</strong></div></div></div><div class="progress-track" role="progressbar" aria-label="کلمه‌های دسته‌بندی‌شده" aria-valuemin="0" aria-valuemax="${C.words.length}" aria-valuenow="${state.solved.length}"><span style="width:${state.solved.length / C.words.length * 100}%"></span></div><div class="word-tray"><div class="tray-label"><span>میز واژه‌ها</span><span>انتخاب کن و در سبد بگذار ↓</span></div><div class="words">${state.order.map(id => {
+    app.innerHTML = `<section aria-labelledby="sorting-title"><div class="screen-heading sorting-heading"><div><div class="eyebrow">قدم دوم · هر کلمه در سبد خودش</div><h2 id="sorting-title">وقتِ چیدن واژه‌هاست!</h2><p>کلمه‌های شبیه نمونه‌های هر گروه را در سبد همان گروه بگذار؛ کارت را بکش یا کارت و سبد را انتخاب کن.</p></div><div class="scoreboard"><div class="stat">کلمه‌های درست<strong id="correct-count">${fa(state.solved.length)} از ${fa(C.words.length)}</strong></div><div class="stat">امتیاز تو<strong id="score">${fa(score())}</strong></div></div></div><div class="progress-track" role="progressbar" aria-label="کلمه‌های دسته‌بندی‌شده" aria-valuemin="0" aria-valuemax="${C.words.length}" aria-valuenow="${state.solved.length}"><span style="width:${state.solved.length / C.words.length * 100}%"></span></div><div class="word-tray"><div class="tray-label"><span>میز واژه‌ها</span><span>انتخاب کن و در سبد بگذار ↓</span></div><div class="words">${state.order.map(id => {
       const w = C.words.find(w => w.id === id);
       return state.solved.includes(id) ? `<div class="word-slot sorted" data-slot="${esc(id)}">✓ در سبد است</div>` : `<div class="word-slot" data-slot="${esc(id)}"><button class="word-card" data-word="${esc(id)}" aria-pressed="false" aria-label="انتخاب کلمهٔ ${esc(w.text)}">${esc(w.text)}</button></div>`;
-    }).join('')}</div></div><div class="groups sorting-groups">${C.groups.map(g => `<div class="basket ${esc(g.id)}" data-group="${esc(g.id)}" role="button" tabindex="0" aria-label="سبد ${esc(g.title)}"><h3>${esc(g.title)}</h3><p>${esc(g.kind)}</p><div class="placed-words">${C.words.filter(w => w.group === g.id && state.solved.includes(w.id)).map(w => `<span class="placed-word">${esc(w.text)} ✓</span>`).join('')}</div></div>`).join('')}</div><p class="feedback" id="feedback">اشتباه کردن هم بخشی از یادگیری است!</p><div class="sort-bottom"><button class="secondary" id="review">نمونه‌ها را دوباره ببین</button><p>هر کلمهٔ درست = ۱ امتیاز<br>با خیال راحت امتحان کن.</p></div></section>`;
+    }).join('')}</div></div><div class="groups sorting-groups">${displayGroups().map(g => {const v=identity(g.id);return `<div class="basket ${v.style}" data-group="${esc(g.id)}" role="button" tabindex="0" aria-label="سبد گروه ${v.letter}"><h3><span aria-hidden="true">${v.symbol}</span> سبد گروه ${v.letter}</h3><p class="basket-examples">مثل: ${g.examples.map(esc).join('، ')}</p><div class="placed-words">${C.words.filter(w => w.group === g.id && state.solved.includes(w.id)).map(w => `<span class="placed-word">${esc(w.text)} ✓</span>`).join('')}</div></div>`;}).join('')}</div><p class="feedback" id="feedback">اشتباه کردن هم بخشی از یادگیری است!</p><div class="sort-bottom"><button class="secondary" id="review">نمونه‌ها را دوباره ببین</button><p>هر کلمهٔ درست = ۱ امتیاز<br>با خیال راحت امتحان کن.</p></div></section>`;
     $('#review').onclick = enterLearning;
     document.querySelectorAll('[data-word]').forEach(card => {
       card.onclick = e => { if (ignoreClick && e.detail !== 0) return; selectCard(card.dataset.word); };
@@ -189,7 +230,7 @@
       document.querySelectorAll('.basket').forEach(el => el.classList.remove('can-drop'));
       const card = document.querySelector(`[data-word="${id}"]`);
       card?.classList.remove('shake'); if (card) { void card.offsetWidth; card.classList.add('shake'); }
-      feedback(`این سبد جای «${word.text}» نیست. به معنی و ساخت کلمه فکر کن و دوباره امتحان کن.`, true);
+      feedback(`این سبد جای «${word.text}» نیست. به نمونه‌های این گروه نگاه کن و دوباره امتحان کن.`, true);
       return;
     }
     state.solved.push(id); selected = null; save(); tone(true);
@@ -249,11 +290,11 @@
   window.addEventListener('blur', cleanupDrag);
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && selected) selectCard(selected); });
   function renderBonus() {
-    const status = state.bonusStatus;
-    app.innerHTML = `<section class="bonus-panel" aria-labelledby="bonus-title"><div class="eyebrow">قدم سوم · یک چالش برای ذهن کنجکاو تو</div><h2 id="bonus-title">یک چالش برای کشف بهتر واژه‌ها!</h2><div class="challenge-word">${esc(C.bonus.word)}</div><h3>${esc(C.bonus.question)}</h3><p>به ساخت و معنی کلمه فکر کن.</p><div class="choices"><button class="secondary choice" id="yes" ${status === 'correct' ? 'disabled' : ''}>بله</button><button class="secondary choice" id="no" ${status === 'correct' ? 'disabled' : ''}>خیر</button></div><p>پاسخ درست این چالش ${fa(C.bonus.points)} امتیاز دارد.</p>${status === 'pending' ? '' : `<div class="bonus-explanation"><strong>${status === 'correct' ? 'آفرین! دقیق فکر کردی. +۲ امتیاز' : 'یک نکتهٔ تازه یاد بگیریم!'}</strong><p>${esc(C.bonus.explanation)}</p>${status === 'wrong' ? '<p>توضیح را بخوان و پاسخ را اصلاح کن، یا بدون امتیاز چالش ادامه بده.</p>' : ''}<div class="button-row"><button class="${status === 'correct' ? 'primary' : 'secondary'}" id="finish">${status === 'correct' ? 'بریم جشن یادگیری!' : 'ادامه بدون امتیاز چالش'}</button></div></div>`}</section>`;
-    $(C.bonus.correct === 'yes' ? '#yes' : '#no').classList.toggle('correct-choice', status === 'correct');
-    $('#yes').onclick = () => answerBonus('yes'); $('#no').onclick = () => answerBonus('no');
-    if ($('#finish')) $('#finish').onclick = finish;
+    const status=state.bonusStatus,g=C.groups.find(g=>g.id===C.bonus.groupId),v=identity(g.id);
+    app.innerHTML = `<section class="bonus-panel" aria-labelledby="bonus-title"><div class="eyebrow">قدم سوم · یک چالش برای ذهن کنجکاو تو</div><h2 id="bonus-title">یک چالش برای کشف بهتر واژه‌ها!</h2><div class="mystery-reference ${v.style}"><span aria-hidden="true">${v.symbol}</span> نمونه‌های گروه ${v.letter}: ${g.examples.map(esc).join('، ')}</div><div class="challenge-word">${esc(C.bonus.word)}</div><h3>${esc(groupText(C.bonus.mysteryQuestion,g.id))}</h3><p>به الگوی نمونه‌های همین گروه فکر کن.</p><div class="choices"><button class="secondary choice" id="yes" ${status==='correct'?'disabled':''}>بله</button><button class="secondary choice" id="no" ${status==='correct'?'disabled':''}>خیر</button></div><p>پاسخ درست این چالش ${fa(C.bonus.points)} امتیاز دارد.</p>${status==='pending'?'':`<div class="bonus-explanation"><strong>${status==='correct'?'آفرین! دقیق فکر کردی. +۲ امتیاز':'یک بار دیگر به نمونه‌ها نگاه کنیم!'}</strong><p>${status==='correct'?'در مرحلهٔ بعد راز این گروه را با هم باز می‌کنیم.':'این پاسخ با الگوی نمونه‌های گروه سازگار نیست. می‌توانی پاسخ را اصلاح کنی یا بدون امتیاز چالش ادامه بدهی.'}</p><div class="button-row"><button class="${status==='correct'?'primary':'secondary'}" id="finish">${status==='correct'?'بریم راز گروه‌ها را کشف کنیم!':'ادامه بدون امتیاز چالش'}</button></div></div>`}</section>`;
+    $(C.bonus.correct==='yes'?'#yes':'#no').classList.toggle('correct-choice',status==='correct');
+    $('#yes').onclick=()=>answerBonus('yes');$('#no').onclick=()=>answerBonus('no');
+    if($('#finish'))$('#finish').onclick=finish;
   }
   function answerBonus(answer) {
     if (state.screen !== 'BONUS' || state.bonusStatus === 'correct') return;
@@ -264,18 +305,56 @@
     (correct ? $('#finish') : $('#'+C.bonus.correct)).focus({preventScroll:true});
   }
   function finish() {
-    if (state.screen !== 'BONUS' || !['correct','wrong'].includes(state.bonusStatus)) return;
-    if (state.bonusStatus === 'wrong') state.bonusStatus = 'skipped';
-    syncTime(); setActive(false); state.finishedAt = Math.max(state.startedAt,Date.now()); transition('RESULT'); recordResult();
+    if(state.screen!=='BONUS'||!['correct','wrong'].includes(state.bonusStatus))return;
+    if(state.bonusStatus==='wrong')state.bonusStatus='skipped';
+    syncTime();state.scoredFinishedAt=Math.max(state.startedAt,Date.now());transition('REASONS');
+  }
+  function renderReasons() {
+    if(state.reasonsCompleted){
+      app.innerHTML=`<section class="reasons-panel" aria-labelledby="reasons-title"><div class="eyebrow">رازها را کشف کردیم!</div><h2 id="reasons-title">راز دو گروه</h2><p>دو راه برای کنار هم گذاشتن واژه‌ها:</p><div class="revealed-groups">${displayGroups().map(g=>{const v=identity(g.id);return `<article class="learning-group ${v.style}"><h3><span aria-hidden="true">${v.symbol}</span> گروه ${v.letter}: ${esc(g.title)}</h3><p>${esc(g.explanation)}</p></article>`;}).join('')}</div><p class="note">این بخش برای یادگیری بود؛ امتیاز مسابقهٔ تو تغییر نکرد.</p><button class="primary" id="finish-reasons">بریم جشن یادگیری!</button></section>`;
+      $('#finish-reasons').onclick=finishReasons;return;
+    }
+    const q=C.reasons.questions[state.reasonIndex],a=state.reasonAnswers[state.reasonIndex],v=identity(q.groupId),done=a.status!=='pending';
+    const explanation=done?q.explanation:a.attempts?q.hint:'';
+    app.innerHTML=`<section class="reasons-panel" aria-labelledby="reasons-title"><div class="screen-heading"><div><div class="eyebrow">قدم چهارم · بدون امتیاز و بدون عجله</div><h2 id="reasons-title">راز دو گروه</h2></div><span class="reason-progress">پرسش ${fa(state.reasonIndex+1)} از ۴</span></div><p class="mystery-reference ${v.style}"><span aria-hidden="true">${v.symbol}</span> گروه ${v.letter}: ${C.groups.find(g=>g.id===q.groupId).examples.map(esc).join('، ')}</p><h3 id="reason-question">${esc(groupText(q.text,q.groupId))}</h3><div class="reason-options" role="group" aria-labelledby="reason-question">${q.options.map(o=>`<button class="reason-option ${done&&o.id===q.correctOptionId?'reason-correct':''}" data-reason-option="${esc(o.id)}" ${done||a.tried.includes(o.id)?'disabled':''}>${done&&o.id===q.correctOptionId?'<span aria-hidden="true">✓ </span>':''}${esc(o.text)}</button>`).join('')}</div><div id="reason-feedback" class="reason-feedback">${explanation?`<strong>${a.status==='correct'?'درست گفتی!':a.status==='revealed'?'بیایید پاسخ را با هم یاد بگیریم.':'به یک نشانه فکر کنیم:'}</strong><p>${esc(explanation)}</p>`:'یک پاسخ انتخاب کن؛ اینجا قرار است با هم یاد بگیریم.'}</div>${done?`<button class="primary" id="reason-next">${a.status==='revealed'?'فهمیدم، ادامه':state.reasonIndex===3?'فهمیدم، رازها را مرور کنیم':'فهمیدم، سوال بعدی'}</button>`:''}</section>`;
+    document.querySelectorAll('[data-reason-option]').forEach(btn=>{btn.onclick=()=>answerReason(q.id,btn.dataset.reasonOption);});
+    if($('#reason-next'))$('#reason-next').onclick=()=>nextReason(q.id);
+  }
+  function answerReason(questionId,optionId){
+    if(state.screen!=='REASONS'||state.reasonsCompleted)return;
+    const q=C.reasons.questions[state.reasonIndex],a=state.reasonAnswers[state.reasonIndex];
+    if(q.id!==questionId||a.status!=='pending'||a.tried.includes(optionId)||!q.options.some(o=>o.id===optionId))return;
+    const correct=optionId===q.correctOptionId;
+    a.tried.push(optionId);a.selected=optionId;a.attempts=a.tried.length;
+    if(a.firstCorrect===null)a.firstCorrect=correct;
+    if(correct)a.status='correct';else if(a.attempts>=3)a.status='revealed';
+    save();renderReasons();announce(a.status==='pending'?q.hint:q.explanation);
+    ($('#reason-next')||document.querySelector('[data-reason-option]:not(:disabled)'))?.focus({preventScroll:true});
+  }
+  function nextReason(questionId){
+    if(state.screen!=='REASONS'||state.reasonsCompleted)return;
+    const q=C.reasons.questions[state.reasonIndex],a=state.reasonAnswers[state.reasonIndex];
+    if(q.id!==questionId||a.status==='pending')return;
+    state.reasonIndex++;state.reasonsCompleted=state.reasonIndex===4;save();renderReasons();app.focus();
+    announce(state.reasonsCompleted?'راز هر دو گروه را کشف کردیم. حالا توضیح کوتاه را مرور کن.':`پرسش ${fa(state.reasonIndex+1)} از ۴. ${groupText(C.reasons.questions[state.reasonIndex].text,C.reasons.questions[state.reasonIndex].groupId)}`);
+  }
+  function finishReasons(){
+    if(state.screen!=='REASONS'||!state.reasonsCompleted||state.reasonIndex!==4)return;
+    syncTime();setActive(false);state.finishedAt=Math.max(state.scoredFinishedAt,Date.now());transition('RESULT');recordResult();
+  }
+  function reasoningMetrics(){
+    if(state.legacyCompleted)return null;
+    const answers=state.reasonAnswers;
+    return {completed:state.reasonsCompleted,questionCount:4,firstAttemptCorrect:answers.filter(a=>a.firstCorrect).length,totalAttempts:answers.reduce((sum,a)=>sum+a.attempts,0),questionsWithHints:answers.filter(a=>a.firstCorrect===false).length,revealedQuestions:answers.filter(a=>a.status==='revealed').length,durationSeconds:Math.floor(state.reasoningElapsedMs/1000)};
   }
   function duration() { return Math.max(0,Math.floor(state.elapsedMs/1000)); }
   function recordResult() {
     if (state.screen !== 'RESULT') return;
     W.putSession({sessionId:state.id,contentPackId:C.id,startedAt:new Date(state.startedAt).toISOString(),completedAt:new Date(state.finishedAt).toISOString(),
-      durationSeconds:duration(),score:score(),maxScore,incorrectAttempts:state.mistakes,bonusCorrect:state.bonusStatus==='correct',perceivedDifficulty:state.rating,durationBasis:'active-monotonic'});
+      durationSeconds:duration(),score:score(),maxScore,incorrectAttempts:state.mistakes,bonusCorrect:state.bonusStatus==='correct',perceivedDifficulty:state.rating,durationBasis:'active-monotonic',reasoning:reasoningMetrics()});
   }
   function renderResult() {
-    app.innerHTML = `<section class="result-panel" aria-labelledby="result-title"><div class="confetti" aria-hidden="true">${Array.from({length:22}, (_,i) => `<span style="left:${i*4.5}%;animation-delay:${(i%5)*.15}s"></span>`).join('')}</div><div class="trophy" aria-hidden="true">✦</div><div class="eyebrow">کارگاه امروز با موفقیت تمام شد</div><h2 id="result-title">آفرین، کاشف واژه‌ها!</h2><p class="muted">هر کلمه را به خانهٔ خودش رساندی.</p><div class="final-score">${fa(score())} <small>از ${fa(maxScore)} امتیاز</small></div><div class="result-metrics"><span>کلمه‌های درست<strong>${fa(state.solved.length)} از ${fa(C.words.length)}</strong></span><span>تلاش‌های اشتباه<strong>${fa(state.mistakes)}</strong></span><span>زمان بازی<strong>${esc(W.formatDuration(duration()))}</strong></span></div><div class="button-row"><button class="primary" id="replay">بازی دوباره ↻</button></div><details><summary>چرا این جواب‌ها درست بودن؟</summary><ol>${C.summary.map(s => `<li>${esc(s)}</li>`).join('')}</ol></details><div class="rating"><p>بازی برات چطور بود؟ <span class="muted">(اختیاری)</span></p><div class="rating-options">${[['easy','آسون بود'],['suitable','مناسب بود'],['hard','سخت بود']].map(([value,text]) => `<button data-rating="${value}" aria-pressed="${state.rating === value}">${text}</button>`).join('')}</div><p id="rating-status" class="muted">${state.rating ? 'ممنون! نظرت ثبت شد.' : 'این پاسخ فقط روی همین دستگاه نگهداری می‌شود.'}</p></div></section>`;
+    app.innerHTML = `<section class="result-panel" aria-labelledby="result-title"><div class="confetti" aria-hidden="true">${Array.from({length:22}, (_,i) => `<span style="left:${i*4.5}%;animation-delay:${(i%5)*.15}s"></span>`).join('')}</div><div class="trophy" aria-hidden="true">✦</div><div class="eyebrow">کارگاه امروز با موفقیت تمام شد</div><h2 id="result-title">آفرین، کاشف واژه‌ها!</h2><p class="muted">هر کلمه را به خانهٔ خودش رساندی.</p><div class="final-score">${fa(score())} <small>از ${fa(maxScore)} امتیاز</small></div><div class="result-metrics"><span>کلمه‌های درست<strong>${fa(state.solved.length)} از ${fa(C.words.length)}</strong></span><span>تلاش‌های اشتباه<strong>${fa(state.mistakes)}</strong></span><span>زمان بخش امتیازی<strong>${esc(W.formatDuration(duration()))}</strong></span></div><div class="button-row"><button class="primary" id="replay">بازی دوباره ↻</button></div><details><summary>چرا این جواب‌ها درست بودن؟</summary><ol>${displayGroups().map(g => `<li>گروه ${identity(g.id).letter}: ${esc(g.title)}. ${esc(g.explanation)}</li>`).join('')}</ol></details><div class="rating"><p>بازی برات چطور بود؟ <span class="muted">(اختیاری)</span></p><div class="rating-options">${[['easy','آسون بود'],['suitable','مناسب بود'],['hard','سخت بود']].map(([value,text]) => `<button data-rating="${value}" aria-pressed="${state.rating === value}">${text}</button>`).join('')}</div><p id="rating-status" class="muted">${state.rating ? 'ممنون! نظرت ثبت شد.' : 'این پاسخ فقط روی همین دستگاه نگهداری می‌شود.'}</p></div></section>`;
     $('#replay').onclick = restart;
     document.querySelectorAll('[data-rating]').forEach(btn => { btn.onclick = () => {
       state.rating = btn.dataset.rating; save(); recordResult();
@@ -283,7 +362,7 @@
       $('#rating-status').textContent = 'ممنون! نظرت ثبت شد.'; announce('نظرت ثبت شد. ممنون!');
     }; });
   }
-  function resume() { if(adminMode) return; setActive(['LEARNING','SORTING','BONUS'].includes(state.screen) && !document.hidden && !$('#help-dialog').open); }
+  function resume() { if(adminMode) return; setActive(timedScreens.includes(state.screen) && !document.hidden && !$('#help-dialog').open); }
   function openHelp() { cleanupDrag(); setActive(false); save(); $('#help-dialog').showModal(); }
   $('#help-dialog').addEventListener('close',resume);
   document.addEventListener('visibilitychange',()=>{ cleanupDrag(); if(document.hidden) { setActive(false); save(); } else resume(); });

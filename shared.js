@@ -1,7 +1,7 @@
 /* مشترک میان بازی و مدیریت؛ بدون fetch و قابل اجرا از file://. */
 window.WordLab = (() => {
   'use strict';
-  const appVersion = '1.1.0', schemaVersion = 1;
+  const appVersion = '1.2.0', schemaVersion = 2;
   const historyKey = 'word-workshop-results-v2';
   let memory = [];
   const fa = n => Math.floor(n).toLocaleString('fa-IR', {useGrouping:false});
@@ -31,7 +31,13 @@ window.WordLab = (() => {
     return {sessionId:r.sessionId,contentPackId:r.contentPackId,startedAt:r.startedAt,completedAt:r.completedAt,
       durationSeconds:r.durationSeconds,durationFormatted:formatDuration(r.durationSeconds),score:r.score,maxScore:r.maxScore,
       incorrectAttempts:r.incorrectAttempts,bonusCorrect:r.bonusCorrect,perceivedDifficulty:r.perceivedDifficulty,
-      durationBasis:r.durationBasis === 'legacy-wall-clock' ? 'legacy-wall-clock' : 'active-monotonic'};
+      durationBasis:r.durationBasis === 'legacy-wall-clock' ? 'legacy-wall-clock' : 'active-monotonic',reasoning:cleanReasoning(r.reasoning)};
+  }
+  function cleanReasoning(value){
+    if(!value||value.completed!==true||value.questionCount!==4)return null;
+    for(const key of ['firstAttemptCorrect','questionsWithHints','revealedQuestions','totalAttempts','durationSeconds'])if(!Number.isSafeInteger(value[key])||value[key]<0)return null;
+    if(value.firstAttemptCorrect+value.questionsWithHints!==4||value.revealedQuestions>value.questionsWithHints||value.totalAttempts<4+value.questionsWithHints+value.revealedQuestions||value.totalAttempts>4+2*value.questionsWithHints)return null;
+    return {completed:true,questionCount:4,firstAttemptCorrect:value.firstAttemptCorrect,totalAttempts:value.totalAttempts,questionsWithHints:value.questionsWithHints,revealedQuestions:value.revealedQuestions,durationSeconds:value.durationSeconds};
   }
   function sessions() {
     let stored = read(historyKey);
